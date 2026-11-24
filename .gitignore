@@ -1,0 +1,19 @@
+# Python / Node / Rust build & scratch artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+target/
+dist/
+*.egg-info/
+
+# Local data mirrors, API keys, and run outputs
+.env
+.env.*
+data/
+runs/
+results/*.local.*
+.DS_Store
