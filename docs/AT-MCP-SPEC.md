@@ -21,23 +21,30 @@ In `AtMcp.Inbound.Store`, `finish/3` bounds `state.data.receipts` via:
 ```elixir
 receipts: Enum.take([key | state.data.receipts], state.max_receipts)
 ```
-and `stage/3` deduplicates solely by `MapSet.member?(receipts, key)`. Once `> max_receipts` deliveries succeed, evicted `{matched_did, uri}` keys become indistinguishable from unseen events if a Jetstream cursor rewind or poll overlap re-scans earlier timestamps. Additionally, notification `seenAt` markers set equal to `max(indexed_at)` leave boundary-millisecond items unread on AppViews that test `indexedAt >= seenAt`.
+and `stage/3` deduplicates solely against active `receipts` membership. Once `> max_receipts` deliveries succeed, evicted `{matched_did, uri}` keys become indistinguishable from unseen events if a Jetstream cursor rewind or poll overlap re-scans earlier timestamps. Additionally, notification `seenAt` markers set equal to `max(indexed_at)` leave boundary-millisecond items unread on AppViews that test `indexedAt >= seenAt`.
 
 ### Additive `version: 1` Patch (`lib/at_mcp/inbound/store.ex`)
 
-Add an additive `:forgotten_floor` map (`%{did => unix_microseconds}`) to `inbound.term` (preserving `version: 1` rolling-upgrade compatibility exactly like `:notifications` and `:next_seq`):
+Add an additive `:forgotten_floor` map (`%{did => unix_microseconds}`) and parallel `:receipt_meta` map (`%{key => {did, event_us}}`) alongside the FIFO `receipts` list in `inbound.term` (preserving `version: 1` rolling-upgrade compatibility exactly like `:notifications` and `:next_seq`):
 
 ```elixir
-# 1. Store `{key, did, event_us}` tuples (or parallel map `receipt_times: %{key => {did, event_us}}`)
-#    and advance `forgotten_floor[did]` monotonically whenever `Enum.split(..., state.max_receipts)` evicts entries:
+# 1. Keep `receipts` as a newest-first FIFO list (`[key | receipts]`), track `receipt_meta: %{key => {did, event_us}}`
+#    for O(1) membership checks, and advance `forgotten_floor[did]` monotonically whenever `Enum.split(receipts, max_receipts)` evicts entries:
 
-defp event_time_us(event) do
+defp event_field(event, atom_key, string_key) when is_map(event) do
+  Map.get(event, atom_key) || Map.get(event, string_key)
+end
+
+defp event_time_us(event) when is_map(event) do
+  cursor = event_field(event, :cursor, "cursor")
+  indexed_at = event_field(event, :indexed_at, "indexed_at")
+
   cond do
-    is_integer(event[:cursor]) and event[:cursor] > 0 ->
-      event[:cursor]
+    is_integer(cursor) and cursor > 0 ->
+      cursor
 
-    is_binary(event["indexed_at"] || event[:indexed_at]) ->
-      case DateTime.from_iso8601(event["indexed_at"] || event[:indexed_at]) do
+    is_binary(indexed_at) ->
+      case DateTime.from_iso8601(indexed_at) do
         {:ok, dt, _} -> DateTime.to_unix(dt, :microsecond)
         _ -> 0
       end
@@ -48,18 +55,18 @@ defp event_time_us(event) do
 end
 
 defp already_forgotten?(forgotten_floor, event) do
-  did = event[:matched_did] || event["matched_did"]
+  did = event_field(event, :matched_did, "matched_did")
   ts_us = event_time_us(event)
 
   is_binary(did) and ts_us > 0 and
     ts_us <= Map.get(forgotten_floor, did, 0)
 end
 
-defp stage(event, {pending, added, seq}, receipts, forgotten_floor) do
+defp stage(event, {pending, added, seq}, receipt_meta, forgotten_floor) do
   key = event_key(event)
 
   if Map.has_key?(pending, key) or
-       MapSet.member?(receipts, key) or
+       Map.has_key?(receipt_meta, key) or
        already_forgotten?(forgotten_floor, event) do
     {pending, added, seq}
   else
@@ -157,7 +164,8 @@ defmodule AtMcp.Host.SubjectCursors do
   def staleness_badge(note, nil), do: "[rev=#{note.subject_rev_at_write}]"
 
   def staleness_badge(note, %{latest_rev: live_rev, commit_count: live_count}) do
-    if live_rev > note.subject_rev_at_write do
+    if is_binary(note.subject_rev_at_write) and note.subject_rev_at_write != "" and
+         live_rev > note.subject_rev_at_write do
       delta = max(1, live_count - note.commit_count_at_write)
       "[STALE: #{note.subject_handle} has +#{delta} commits since rev #{note.subject_rev_at_write} -> #{live_rev}; re-read before asserting]"
     else
@@ -358,7 +366,8 @@ defmodule AtMcp.Host.CueCard do
       Enum.reduce_while(selected, {[], [], 0}, fn {ep, sc}, {c_acc, l_acc, used} ->
         stale =
           case Map.get(live_cursors, ep.author_did) do
-            %{latest_rev: live_rev} when is_binary(ep.subject_rev) and live_rev > ep.subject_rev ->
+            %{latest_rev: live_rev}
+            when is_binary(ep.subject_rev) and ep.subject_rev != "" and live_rev > ep.subject_rev ->
               " STALE(rev #{ep.subject_rev}->#{live_rev})"
 
             _ ->

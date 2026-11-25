@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import urllib.error
@@ -67,17 +68,73 @@ class PdsRepoEntry:
     active: bool = True
 
 
-def _validate_endpoint_url(url: str, *, allow_loopback_http: bool = False) -> str:
-    parsed = urllib.parse.urlparse(url.rstrip("/"))
-    if parsed.scheme == "https" and parsed.netloc:
-        return url.rstrip("/")
-    if allow_loopback_http and parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1"):
-        return url.rstrip("/")
-    raise XrpcError(f"disallowed or malformed endpoint URL: {url!r}")
+def _validate_endpoint_url(
+    url: str,
+    *,
+    allow_loopback_http: bool = False,
+    allow_request_path: bool = False,
+) -> str:
+    if not url or any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in url):
+        raise XrpcError(f"disallowed or malformed endpoint URL: {url!r}")
+    parsed = urllib.parse.urlparse(url)
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
+        or parsed.params
+        or parsed.fragment
+    ):
+        raise XrpcError(f"disallowed credentials, params, or fragment in URL: {url!r}")
+    if not allow_request_path:
+        if parsed.query or parsed.path not in ("", "/"):
+            raise XrpcError(f"unexpected path or query in base endpoint URL: {url!r}")
+    elif ".." in parsed.path.split("/"):
+        raise XrpcError(f"path traversal in XRPC URL: {url!r}")
+
+    try:
+        _ = parsed.port
+    except ValueError:
+        raise XrpcError(f"invalid port in endpoint URL: {url!r}") from None
+
+    hostname = parsed.hostname
+    if not hostname or "%" in hostname:
+        raise XrpcError(f"missing or invalid host in endpoint URL: {url!r}")
+    host_low = hostname.lower().rstrip(".")
+
+    try:
+        ip_obj = ipaddress.ip_address(host_low)
+    except ValueError:
+        ip_obj = None
+
+    if ip_obj is not None:
+        mapped = getattr(ip_obj, "ipv4_mapped", None)
+        is_loopback = bool(ip_obj.is_loopback and mapped is None)
+        is_non_public = bool(
+            mapped is not None
+            or ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+            or not ip_obj.is_global
+        )
+        if allow_loopback_http and is_loopback and parsed.scheme in ("http", "https"):
+            return url if allow_request_path else url.rstrip("/")
+        if is_non_public or parsed.scheme != "https":
+            raise XrpcError(f"disallowed IP or scheme in endpoint URL: {url!r}")
+        return url if allow_request_path else url.rstrip("/")
+
+    is_local_name = host_low == "localhost" or host_low.endswith((".localhost", ".local", ".internal"))
+    if allow_loopback_http and host_low == "localhost" and parsed.scheme in ("http", "https"):
+        return url if allow_request_path else url.rstrip("/")
+    if is_local_name or parsed.scheme != "https" or "." not in host_low:
+        raise XrpcError(f"disallowed or malformed endpoint URL: {url!r}")
+    return url if allow_request_path else url.rstrip("/")
 
 
 def _get_json(url: str, *, timeout: float = 15.0, allow_loopback_http: bool = False) -> dict:
-    _validate_endpoint_url(url, allow_loopback_http=allow_loopback_http)
+    _validate_endpoint_url(url, allow_loopback_http=allow_loopback_http, allow_request_path=True)
     req = urllib.request.Request(
         url,
         headers={
@@ -129,7 +186,7 @@ def resolve_did_document(
     timeout: float = 15.0,
     allow_loopback_http: bool = False,
 ) -> dict:
-    """Fetch a `did:plc` or `did:web` DID document."""
+    """Fetch a `did:plc` or W3C `did:web` DID document."""
     clean = did.strip()
     if not _DID_RE.fullmatch(clean):
         raise XrpcError(f"invalid DID: {did!r}")
@@ -137,10 +194,43 @@ def resolve_did_document(
         base = _validate_endpoint_url(plc_directory_url, allow_loopback_http=allow_loopback_http)
         encoded = urllib.parse.quote(clean, safe=":")
         return _get_json(f"{base}/{encoded}", timeout=timeout, allow_loopback_http=allow_loopback_http)
-    host = urllib.parse.unquote(clean[len("did:web:") :])
-    scheme = "http" if allow_loopback_http and host.startswith(("127.0.0.1", "localhost")) else "https"
+
+    raw_parts = clean[len("did:web:") :].split(":")
+    if not raw_parts or any(not p for p in raw_parts):
+        raise XrpcError(f"invalid did:web identifier: {did!r}")
+
+    host_port = urllib.parse.unquote(raw_parts[0])
+    if (
+        not host_port
+        or host_port.startswith(":")
+        or host_port.endswith(":")
+        or any(ch in "/?#@\\" or ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in host_port)
+    ):
+        raise XrpcError(f"disallowed host in did:web identifier: {did!r}")
+    if ":" in host_port:
+        host_only, port_str = host_port.split(":", 1)
+        if ":" in host_only or not port_str.isdigit() or not (1 <= int(port_str) <= 65535):
+            raise XrpcError(f"invalid port in did:web identifier: {did!r}")
+    else:
+        host_only = host_port
+
+    decoded_segments: list[str] = []
+    for raw_seg in raw_parts[1:]:
+        seg = urllib.parse.unquote(raw_seg)
+        if (
+            not seg
+            or seg in (".", "..")
+            or ".." in seg
+            or any(ch in "/?#@\\" or ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in seg)
+        ):
+            raise XrpcError(f"disallowed path segment in did:web identifier: {did!r}")
+        decoded_segments.append(urllib.parse.quote(seg, safe="-._~"))
+
+    scheme = "http" if allow_loopback_http and host_only.lower() in ("127.0.0.1", "localhost") else "https"
+    origin = _validate_endpoint_url(f"{scheme}://{host_port}", allow_loopback_http=allow_loopback_http)
+    doc_path = f"/{'/'.join(decoded_segments)}/did.json" if decoded_segments else "/.well-known/did.json"
     return _get_json(
-        f"{scheme}://{host}/.well-known/did.json",
+        f"{origin}{doc_path}",
         timeout=timeout,
         allow_loopback_http=allow_loopback_http,
     )
@@ -209,26 +299,35 @@ def resolve_actor(
     return ResolvedIdentity(did=did, handle=handle, pds_endpoint=pds)
 
 
+def _default_max_pages(limit: int) -> int:
+    return max(1, (limit + 99) // 100)
+
+
 def list_pds_repos(
     pds_url: str = DEFAULT_DELVE_PDS_URL,
     *,
     limit: int = 100,
-    max_pages: int = 5,
+    max_pages: int | None = None,
+    include_inactive: bool = False,
     timeout: float = 15.0,
     allow_loopback_http: bool = False,
 ) -> list[PdsRepoEntry]:
     """Discover hosted repositories on an AT Protocol PDS via `com.atproto.sync.listRepos`."""
-    if limit <= 0 or max_pages <= 0:
+    if limit <= 0:
+        return []
+    pages = _default_max_pages(limit) if max_pages is None else max_pages
+    if pages <= 0:
         return []
     base = _validate_endpoint_url(pds_url, allow_loopback_http=allow_loopback_http)
     repos: list[PdsRepoEntry] = []
     cursor: str | None = None
 
-    for _ in range(max_pages):
+    for _ in range(pages):
         remaining = limit - len(repos)
         if remaining <= 0:
             break
-        params: dict[str, str | int] = {"limit": min(500, remaining)}
+        req_limit = min(500, remaining if include_inactive else max(limit, remaining * 2))
+        params: dict[str, str | int] = {"limit": req_limit}
         if cursor:
             params["cursor"] = cursor
         url = f"{base}/xrpc/com.atproto.sync.listRepos?{urllib.parse.urlencode(params)}"
@@ -243,6 +342,8 @@ def list_pds_repos(
             if not _DID_RE.fullmatch(did):
                 continue
             active = bool(item.get("active", True))
+            if not active and not include_inactive:
+                continue
             repos.append(
                 PdsRepoEntry(
                     did=did,
@@ -267,19 +368,22 @@ def list_repo_records(
     collection: str = "app.bsky.feed.post",
     *,
     limit: int = 100,
-    max_pages: int = 5,
+    max_pages: int | None = None,
     reverse: bool = False,
     timeout: float = 15.0,
     allow_loopback_http: bool = False,
 ) -> list[dict]:
     """Paginate `com.atproto.repo.listRecords` up to `limit` records across `max_pages`."""
-    if limit <= 0 or max_pages <= 0:
+    if limit <= 0:
+        return []
+    pages = _default_max_pages(limit) if max_pages is None else max_pages
+    if pages <= 0:
         return []
     base = _validate_endpoint_url(pds_endpoint, allow_loopback_http=allow_loopback_http)
     collected: list[dict] = []
     cursor: str | None = None
 
-    for _ in range(max_pages):
+    for _ in range(pages):
         remaining = limit - len(collected)
         if remaining <= 0:
             break
@@ -340,6 +444,21 @@ def _extract_reply_uris(val: dict) -> tuple[str, str]:
     return str(root.get("uri", "")), str(parent.get("uri", ""))
 
 
+_URL_SCRUB_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_AT_URI_SCRUB_RE = re.compile(r"at://\S+", re.IGNORECASE)
+_EMAIL_SCRUB_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_HANDLE_SCRUB_RE = re.compile(r"(?<!\w)@[a-zA-Z0-9_.-]+")
+_DID_SCRUB_RE = re.compile(r"did:[a-z]+:[a-zA-Z0-9._:%-]+")
+
+
+def _scrub_anonymized_text(text: str) -> str:
+    scrubbed = _URL_SCRUB_RE.sub("[link]", text)
+    scrubbed = _AT_URI_SCRUB_RE.sub("[at-uri]", scrubbed)
+    scrubbed = _EMAIL_SCRUB_RE.sub("[email]", scrubbed)
+    scrubbed = _HANDLE_SCRUB_RE.sub("@peer_ref", scrubbed)
+    return _DID_SCRUB_RE.sub("did:plc:peer_ref", scrubbed)
+
+
 def records_to_events(
     records: list[dict],
     identity: ResolvedIdentity,
@@ -369,6 +488,7 @@ def records_to_events(
     parsed_rows.sort(key=lambda item: (item[0], item[1]))
 
     events: list[Event] = []
+    rev_floor = 0
     for seq, (ts, orig_uri, rec) in enumerate(parsed_rows, start=1):
         val = rec.get("value") if isinstance(rec.get("value"), dict) else {}
         cid = str(rec.get("cid") or f"cid_{seq}")
@@ -379,8 +499,7 @@ def records_to_events(
 
         raw_text = str(val.get("text") or val.get("summary") or val.get("description") or "")
         if anonymize:
-            raw_text = re.sub(r"@[a-zA-Z0-9_.-]+", "@peer_ref", raw_text)
-            raw_text = re.sub(r"did:[a-z]+:[a-zA-Z0-9._:%-]+", "did:plc:peer_ref", raw_text)
+            raw_text = _scrub_anonymized_text(raw_text)
 
         mentions: list[str] = [actor_handle, actor_did]
         for facet in val.get("facets") or []:
@@ -390,7 +509,8 @@ def records_to_events(
                 if isinstance(feat, dict) and feat.get("did"):
                     mentions.append(alias_did(str(feat["did"])))
 
-        rev_num = _tid_or_rkey_to_int(repo_rev or rkey, seq)
+        rev_num = max(rev_floor + 1, _tid_or_rkey_to_int(rkey or repo_rev, seq))
+        rev_floor = rev_num
         origin = OriginClass.SELF if (self_did and identity.did == self_did) else OriginClass.PEER_AGENT
         events.append(
             Event(
@@ -416,6 +536,7 @@ def load_pds_town_threads(
     collection: str = DELVE_POST_COLLECTION,
     max_repos: int = 20,
     per_repo_limit: int = 30,
+    max_pages: int | None = None,
     anonymize: bool = False,
     self_did: str | None = None,
     timeout: float = 15.0,
@@ -424,16 +545,13 @@ def load_pds_town_threads(
     """Discover active PDS repos via `listRepos` and assemble multi-author `town.delve.feed.post`
     conversations (`reply.root.uri` / `reply.parent.uri`) into chronological `Event` streams.
     """
-    repos = [
-        r
-        for r in list_pds_repos(
-            pds_url,
-            limit=max_repos,
-            timeout=timeout,
-            allow_loopback_http=allow_loopback_http,
-        )
-        if r.active
-    ]
+    repos = list_pds_repos(
+        pds_url,
+        limit=max_repos,
+        max_pages=max_pages,
+        timeout=timeout,
+        allow_loopback_http=allow_loopback_http,
+    )
     did_aliases: dict[str, str] = {}
     uri_aliases: dict[str, str] = {}
 
@@ -471,7 +589,7 @@ def load_pds_town_threads(
                 repo.did,
                 collection=collection,
                 limit=per_repo_limit,
-                max_pages=2,
+                max_pages=max_pages,
                 timeout=timeout,
                 allow_loopback_http=allow_loopback_http,
             )
@@ -487,6 +605,7 @@ def load_pds_town_threads(
 
     events: list[Event] = []
     threads: dict[str, list[str]] = defaultdict(list)
+    author_rev_floor: dict[str, int] = {}
 
     for seq, (ts, orig_uri, repo, rec) in enumerate(collected_raw, start=1):
         val = rec.get("value") if isinstance(rec.get("value"), dict) else {}
@@ -500,9 +619,7 @@ def load_pds_town_threads(
 
         text = str(val.get("text") or "")
         if anonymize:
-            text = re.sub(r"https?://\S+", "[link]", text)
-            text = re.sub(r"@[a-zA-Z0-9_.-]+", "@peer_ref", text)
-            text = re.sub(r"did:[a-z]+:[a-zA-Z0-9._:%-]+", "did:plc:peer_ref", text)
+            text = _scrub_anonymized_text(text)
         prefix = f"[root={root_uri.rsplit('/', 1)[-1]}" + (
             f" reply_to={parent_uri.rsplit('/', 1)[-1]}]" if parent_uri else "]"
         )
@@ -517,7 +634,8 @@ def load_pds_town_threads(
                     mentions.append(map_did(str(feat["did"])))
 
         rkey = orig_uri.rsplit("/", 1)[-1] if "/" in orig_uri else str(seq)
-        rev_int = _tid_or_rkey_to_int(repo.rev or rkey, seq)
+        rev_int = max(author_rev_floor.get(actor_did, 0) + 1, _tid_or_rkey_to_int(rkey, seq))
+        author_rev_floor[actor_did] = rev_int
         eid = f"{norm_uri}@{cid}"
         ev = Event(
             event_id=eid,
@@ -544,7 +662,7 @@ def load_actor_events(
     *,
     collection: str = "app.bsky.feed.post",
     limit: int = 50,
-    max_pages: int = 5,
+    max_pages: int | None = None,
     service_url: str = DEFAULT_APPVIEW_URL,
     plc_directory_url: str = DEFAULT_PLC_DIRECTORY_URL,
     pds_override: str | None = None,

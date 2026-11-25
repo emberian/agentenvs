@@ -170,9 +170,19 @@ class LLMBackend:
             # from user settings. Keep personal settings out of the experiment.
             settings = Path(env.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "settings.json"
             if not env.get("CLAUDE_CODE_OAUTH_TOKEN") and settings.is_file():
-                token = json.loads(settings.read_text()).get("env", {}).get("CLAUDE_CODE_OAUTH_TOKEN")
-                if token:
-                    env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+                try:
+                    cfg = json.loads(settings.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    cfg = {}
+                if isinstance(cfg, dict):
+                    cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+                    token = (
+                        cfg_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+                        or cfg_env.get("oauthToken")
+                        or cfg.get("oauthToken")
+                    )
+                    if isinstance(token, str) and token.strip():
+                        env["CLAUDE_CODE_OAUTH_TOKEN"] = token.strip()
             args = [self.cli or "claude", "-p", "--model", self.model, "--no-session-persistence",
                     "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--system-prompt",
                     system, "--output-format", "json"]

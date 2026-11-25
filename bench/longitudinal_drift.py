@@ -176,6 +176,21 @@ class LongitudinalLLM:
         if self.backend == "claude-cli":
             env = os.environ.copy()
             env["ANTHROPIC_API_KEY"] = ""
+            settings = Path(env.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "settings.json"
+            if not env.get("CLAUDE_CODE_OAUTH_TOKEN") and settings.is_file():
+                try:
+                    cfg = json.loads(settings.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    cfg = {}
+                if isinstance(cfg, dict):
+                    cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+                    token = (
+                        cfg_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+                        or cfg_env.get("oauthToken")
+                        or cfg.get("oauthToken")
+                    )
+                    if isinstance(token, str) and token.strip():
+                        env["CLAUDE_CODE_OAUTH_TOKEN"] = token.strip()
             cmd_bin = self.cli or "claude"
             resolved = shutil.which(cmd_bin) or cmd_bin
             args = [
@@ -1003,6 +1018,8 @@ class ArmCostMeter:
         self.calls: dict[str, int] = {"actor": 0, "maintenance": 0}
         self.input_tokens: dict[str, int] = {"actor": 0, "maintenance": 0}
         self.output_tokens: dict[str, int] = {"actor": 0, "maintenance": 0}
+        self.cached_input_tokens: int = 0
+        self.cached_output_tokens: int = 0
         self.latency_s: dict[str, float] = {"actor": 0.0, "maintenance": 0.0}
 
     def __getattr__(self, name: str):
@@ -1011,9 +1028,14 @@ class ArmCostMeter:
     def complete(self, role_tag: str, system: str, prompt: str) -> Completion:
         comp = self._llm.complete(role_tag, system, prompt)
         bucket = "actor" if role_tag == "actor" else "maintenance"
+        in_tok = int(comp.usage.get("input_tokens", 0) or 0)
+        out_tok = int(comp.usage.get("output_tokens", 0) or 0)
         self.calls[bucket] += 1
-        self.input_tokens[bucket] += int(comp.usage.get("input_tokens", 0) or 0)
-        self.output_tokens[bucket] += int(comp.usage.get("output_tokens", 0) or 0)
+        self.input_tokens[bucket] += in_tok
+        self.output_tokens[bucket] += out_tok
+        if comp.cached:
+            self.cached_input_tokens += in_tok
+            self.cached_output_tokens += out_tok
         self.latency_s[bucket] += float(comp.latency_s or 0.0)
         return comp
 
@@ -1028,6 +1050,8 @@ class ArmCostMeter:
             "maintenance_input_tokens": self.input_tokens["maintenance"],
             "total_input_tokens": total_in,
             "total_output_tokens": total_out,
+            "cached_input_tokens": self.cached_input_tokens,
+            "cached_output_tokens": self.cached_output_tokens,
             "input_tokens_per_wake": round(total_in / n, 1),
             "output_tokens_per_wake": round(total_out / n, 1),
             "actor_latency_s_per_wake": round(self.latency_s["actor"] / n, 2),
@@ -1194,6 +1218,8 @@ def run_experiment(
         "cached_hits": llm.cached_hits,
         "input_tokens": llm.input_tokens,
         "output_tokens": llm.output_tokens,
+        "cached_input_tokens": sum(int(r["cost"]["cached_input_tokens"]) for r in arm_results),
+        "cached_output_tokens": sum(int(r["cost"]["cached_output_tokens"]) for r in arm_results),
         "arms": {r["substrate"]: r for r in arm_results},
     }
 

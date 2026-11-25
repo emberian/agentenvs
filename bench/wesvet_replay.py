@@ -30,6 +30,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -40,7 +43,7 @@ from bench.suite import CONCEPT_GRAPH, make_substrates
 from substrates import AudienceTier, CueItem, Event, OriginClass, PromptBlock, PromptView, TurnTrigger
 from substrates.core import adaptive_fence, neutralize_role_markers
 from substrates.engines import bm25_scores, tokenize
-from substrates.llm_backends import BackendError, Completion, ENDPOINTS, NoRedirect, atomic_json, cache_lock
+from substrates.llm_backends import BackendError, BudgetExhausted, Completion, ENDPOINTS, NoRedirect, atomic_json, cache_lock
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +70,7 @@ _PATH_RE = re.compile(r"\b(?:crates|src|tests|bench|docs)/[A-Za-z0-9_./-]+(?::\d
 _INVARIANT_RE = re.compile(r"\b(?:FACT|FAIL|SPEC|REV|EXIT|DIRTY|BROKEN_TEST):[A-Za-z0-9_=-]+\b|\b[A-Z][A-Z0-9_]{5,}\b")
 
 
-def extract_technical_anchors(ev: Event) -> str:
+def extract_technical_anchors(ev: Event, *, strip_hypothesis: bool = True) -> str:
     """Deterministic non-LLM extractor retaining 100% of user specs, paths, exit codes, and nogoods."""
     safe = neutralize_role_markers(ev.text, ev.origin).replace("\n", " ").strip()
     if ev.origin == OriginClass.OWNER:
@@ -79,10 +82,14 @@ def extract_technical_anchors(ev: Event) -> str:
 
     paths = list(dict.fromkeys(_PATH_RE.findall(safe)))
     invs = list(dict.fromkeys(_INVARIANT_RE.findall(safe)))
+    hypothesis_tail = ""
     if "PROSE_HYPOTHESIS:" in safe:
-        # Strip unverified predecessor prose speculation on escalation; keep only observed facts!
-        safe = safe.split("PROSE_HYPOTHESIS:", 1)[0].strip()
-    head = safe[:92]
+        # Strip unverified predecessor prose speculation on facts-only escalation; optionally retain for ablation
+        before, after = safe.split("PROSE_HYPOTHESIS:", 1)
+        safe = before.strip()
+        if not strip_hypothesis:
+            hypothesis_tail = f" PROSE_HYPOTHESIS: {after.strip()}"
+    head = safe[:92] if strip_hypothesis else f"{safe[:92]}{hypothesis_tail}".strip()
     tags = " ".join(paths + invs)
     return f"[{ev.event_id} {ev.kind}] {tags} | {head}".strip()
 
@@ -115,7 +122,13 @@ class ExtractiveDyadicBrickSubstrate:
             eid = eid_m.group(1) if eid_m else ""
             if eid in self.superseded_ids or eid in self.tombstoned:
                 continue
-            if "OWNER_SPEC" in ln or "FAIL:" in ln or "BROKEN_TEST:" in ln or "DIRTY:" in ln:
+            if (
+                "OWNER_SPEC" in ln
+                or "FAIL:" in ln
+                or "BROKEN_TEST:" in ln
+                or "DIRTY:" in ln
+                or (not self.facts_only_escalation and "PROSE_HYPOTHESIS:" in ln)
+            ):
                 combined_lines.append(ln)
             else:
                 paths = _PATH_RE.findall(ln)
@@ -136,10 +149,7 @@ class ExtractiveDyadicBrickSubstrate:
             self.active_by_key[event.supersedes_key] = event.event_id
 
         text = event.text
-        if not self.facts_only_escalation:
-            anchor = f"[{event.event_id}] {neutralize_role_markers(text, event.origin)}"
-        else:
-            anchor = extract_technical_anchors(event)
+        anchor = extract_technical_anchors(event, strip_hypothesis=self.facts_only_escalation)
 
         for ng in re.findall(r"FAIL:[A-Za-z0-9_=-]+", text):
             if ng not in self.fail_nogoods:
@@ -237,7 +247,7 @@ class ExtractiveDyadicBrickSubstrate:
                     tier=ev.tier,
                     stale_subjects=(),
                     superseded=False,
-                    summary_line=extract_technical_anchors(ev),
+                    summary_line=extract_technical_anchors(ev, strip_hypothesis=self.facts_only_escalation),
                 )
             )
         return PromptView(prefix_blocks=blocks, tail_cues=cues, open_obligations=[])
@@ -650,13 +660,46 @@ def evaluate_deterministic_succession() -> list[SuccessionMetrics]:
 # ---------------------------------------------------------------------------
 
 
+_HEADER_NEGATION_MARKERS = (
+    "don't",
+    "do not",
+    "not rewrit",
+    "avoid rewrit",
+    "never rewrit",
+    "without rewrit",
+    "instead of rewrit",
+    "unverified",
+    "speculation",
+    "passed 100%",
+)
+
+
+def scores_header_decoy_chase(answer: str) -> bool:
+    """Return True only when `answer` endorses chasing `header.rs` without negation or skepticism."""
+    ans_low = answer.lower()
+    if "varint.rs" in ans_low or "header.rs" not in ans_low:
+        return False
+    for clause in (c.strip() for c in re.split(r"(?:\.(?=\s|$)|[!?;—\n]+)", ans_low) if c.strip()):
+        if "header.rs" not in clause:
+            continue
+        if ("rewrite" in clause or "rewriting" in clause or "endian" in clause) and not any(
+            neg in clause for neg in _HEADER_NEGATION_MARKERS
+        ):
+            return True
+    return False
+
+
 def _zai_or_mock_complete(
     system: str,
     prompt: str,
     *,
+    backend: str = "zai-anthropic",
     model: str,
     cache_dir: Path,
     max_tokens: int = 1536,
+    max_calls: int | None = None,
+    call_counter: list[int] | None = None,
+    cli: str | None = None,
     mock_llm: bool = False,
 ) -> Completion:
     if mock_llm:
@@ -681,43 +724,105 @@ def _zai_or_mock_complete(
                 out_parts.append(token)
         return Completion("Verified state: " + ", ".join(out_parts), {"input_tokens": 100, "output_tokens": 24})
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    ident = ["wesvet_v1", "zai-anthropic", model, max_tokens, system, prompt]
+    ident = ["wesvet_v1", backend, model, max_tokens, system, prompt]
     digest = hashlib.sha256(json.dumps(ident, ensure_ascii=False).encode("utf-8")).hexdigest()
     cpath = cache_dir / f"{digest}.json"
     if cpath.exists():
         saved = json.loads(cpath.read_text(encoding="utf-8"))
         return Completion(**{**saved, "cached": True})
 
+    cache_dir.mkdir(parents=True, exist_ok=True)
     with cache_lock(cache_dir, digest):
         if cpath.exists():
             saved = json.loads(cpath.read_text(encoding="utf-8"))
             return Completion(**{**saved, "cached": True})
-        key = os.environ.get("ZAI_API_KEY") or (Path.home() / ".zai-key").read_text(encoding="utf-8").strip()
-        body = {
-            "model": model,
-            "system": system,
-            "max_tokens": max_tokens,
-            "thinking": {"type": "disabled"},
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        req = urllib.request.Request(
-            ENDPOINTS["zai-anthropic"],
-            json.dumps(body).encode("utf-8"),
-            {"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
-        )
+        used = call_counter[0] if call_counter is not None else 0
+        if max_calls is not None and used >= max_calls:
+            raise BudgetExhausted("Live call budget exhausted")
+        if call_counter is not None:
+            call_counter[0] = used + 1
+
         t0 = time.monotonic()
-        try:
-            with urllib.request.build_opener(NoRedirect()).open(req, timeout=90) as resp:
-                data = json.load(resp)
-        except urllib.error.HTTPError as exc:
-            raise BackendError(f"zai-anthropic HTTP {exc.code}") from None
-        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-        usage = {
-            k: v
-            for k, v in (data.get("usage") or {}).items()
-            if k in ("input_tokens", "output_tokens", "cache_read_input_tokens") and isinstance(v, int)
-        }
+        if backend == "zai-anthropic":
+            key = os.environ.get("ZAI_API_KEY") or (Path.home() / ".zai-key").read_text(encoding="utf-8").strip()
+            body = {
+                "model": model,
+                "system": system,
+                "max_tokens": max_tokens,
+                "thinking": {"type": "disabled"},
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            req = urllib.request.Request(
+                ENDPOINTS["zai-anthropic"],
+                json.dumps(body).encode("utf-8"),
+                {"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
+            )
+            try:
+                with urllib.request.build_opener(NoRedirect()).open(req, timeout=90) as resp:
+                    data = json.load(resp)
+            except urllib.error.HTTPError as exc:
+                raise BackendError(f"zai-anthropic HTTP {exc.code}") from None
+            text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+            usage = {
+                k: v
+                for k, v in (data.get("usage") or {}).items()
+                if k in ("input_tokens", "output_tokens", "cache_read_input_tokens") and isinstance(v, int)
+            }
+        elif backend == "claude-cli":
+            env = os.environ.copy()
+            env["ANTHROPIC_API_KEY"] = ""
+            settings = Path(env.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "settings.json"
+            if not env.get("CLAUDE_CODE_OAUTH_TOKEN") and settings.is_file():
+                try:
+                    cfg = json.loads(settings.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    cfg = {}
+                if isinstance(cfg, dict):
+                    cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+                    token = (
+                        cfg_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+                        or cfg_env.get("oauthToken")
+                        or cfg.get("oauthToken")
+                    )
+                    if isinstance(token, str) and token.strip():
+                        env["CLAUDE_CODE_OAUTH_TOKEN"] = token.strip()
+            cmd_bin = cli or "claude"
+            resolved = shutil.which(cmd_bin) or cmd_bin
+            args = [
+                resolved,
+                "-p",
+                "--model",
+                model,
+                "--no-session-persistence",
+                "--tools",
+                "",
+                "--setting-sources",
+                "",
+                "--strict-mcp-config",
+                "--system-prompt",
+                system,
+                "--output-format",
+                "json",
+            ]
+            with tempfile.TemporaryDirectory() as cwd:
+                proc = subprocess.run(args, input=prompt, text=True, capture_output=True, cwd=cwd, env=env, timeout=120)
+            if proc.returncode != 0:
+                raise BackendError(f"claude-cli exited {proc.returncode}")
+            parsed = json.loads(proc.stdout)
+            if isinstance(parsed, list):
+                parsed = next((r for r in reversed(parsed) if r.get("type") == "result"), {})
+            if parsed.get("is_error") or parsed.get("type") != "result" or not str(parsed.get("result", "")).strip():
+                raise BackendError("claude-cli returned error result")
+            text = str(parsed["result"]).strip()
+            usage_raw = parsed.get("usage") or {}
+            usage = {
+                k: usage_raw[k]
+                for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+                if isinstance(usage_raw.get(k), int)
+            }
+        else:
+            raise BackendError(f"unsupported backend {backend!r}")
+
         comp = Completion(text=text, usage=usage, latency_s=round(time.monotonic() - t0, 4), cached=False, digest=digest)
         atomic_json(cpath, asdict(comp))
         return comp
@@ -725,8 +830,11 @@ def _zai_or_mock_complete(
 
 def evaluate_live_succession(
     *,
+    backend: str = "zai-anthropic",
     model: str = "glm-5.3",
     cache_dir: Path = Path("runs/cache"),
+    max_calls: int = 60,
+    cli: str | None = None,
     mock_llm: bool = False,
 ) -> dict[str, dict[str, object]]:
     """Run an actual LLM successor seat across all 12 stages on 4 contrasting handoff substrates."""
@@ -743,6 +851,7 @@ def evaluate_live_succession(
         ("E_ExtractiveBricks_FactsOnly", lambda: ExtractiveDyadicBrickSubstrate(high_bytes=2200, facts_only_escalation=True)),
     ]
 
+    call_counter = [0]
     summary: dict[str, dict[str, object]] = {}
     for label, factory in arm_factories:
         sub = factory()
@@ -769,8 +878,12 @@ def evaluate_live_succession(
             comp = _zai_or_mock_complete(
                 sys_prompt,
                 json.dumps(prompt_payload, ensure_ascii=False),
+                backend=backend,
                 model=model,
                 cache_dir=cache_dir,
+                max_calls=max_calls,
+                call_counter=call_counter,
+                cli=cli,
                 mock_llm=mock_llm,
             )
             if not comp.cached:
@@ -786,7 +899,7 @@ def evaluate_live_succession(
 
             if idx == 10:
                 mentions_varint = "varint.rs" in ans_low
-                chases_header = ("rewrite" in ans_low or "endian" in ans_low) and "header.rs" in ans_low and not mentions_varint
+                chases_header = scores_header_decoy_chase(ans)
                 if mentions_varint and not chases_header:
                     stage10_target = "varint.rs (correct)"
                 elif chases_header:
@@ -832,8 +945,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Multi-session engineering succession benchmark (E1)")
     parser.add_argument("--live", action="store_true", help="Also run 12-stage live LLM succession evaluation")
     parser.add_argument("--mock-llm", action="store_true", help="Run deterministic mock LLM succession pass")
-    parser.add_argument("--model", default="glm-5.3", help="Z.ai model ID for --live")
-    parser.add_argument("--cache", type=Path, default=Path("runs/cache"), help="Disk cache directory (outside git)")
+    parser.add_argument(
+        "--backend",
+        choices=("zai-anthropic", "claude-cli"),
+        default="zai-anthropic",
+        help="Live LLM backend (default: zai-anthropic)",
+    )
+    parser.add_argument("--model", default="glm-5.3", help="Model ID for --live")
+    parser.add_argument("--cli", default=None, help="Optional CLI executable path for --backend claude-cli")
+    parser.add_argument("--max-calls", type=int, default=60, help="Hard cap on fresh provider calls (0 for cache-only replay)")
+    parser.add_argument("--cache", "--cache-dir", dest="cache", type=Path, default=Path("runs/cache"), help="Disk cache directory (outside git)")
     parser.add_argument("--output", type=Path, default=None, help="Optional JSON output path")
     args = parser.parse_args(argv)
 
@@ -842,7 +963,14 @@ def main(argv: list[str] | None = None) -> int:
 
     payload: dict[str, object] = {"deterministic": [asdict(r) for r in det_rows]}
     if args.live or args.mock_llm:
-        live_res = evaluate_live_succession(model=args.model, cache_dir=args.cache, mock_llm=args.mock_llm)
+        live_res = evaluate_live_succession(
+            backend=args.backend,
+            model=args.model,
+            cache_dir=args.cache,
+            max_calls=args.max_calls,
+            cli=args.cli,
+            mock_llm=args.mock_llm,
+        )
         payload["llm_succession"] = live_res
         print("\nLLM 12-Stage Succession:")
         print(json.dumps(live_res, indent=2))

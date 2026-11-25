@@ -236,7 +236,7 @@ It did **not** produce the predicted behavioral capitulation under pressure. The
 ### 4.5 Threats to validity
 
 - **Sample sizes.** There is a single run per (model, arm), with no seeds or temperature sweeps, 5 checkpoints for GLM and 3 for Haiku. Differences of one checkpoint move rates by 0.20 to 0.33. None of the differences above has been tested for significance.
-- **Asymmetric information.** Only `L1` and `L4` are told about the private cancellation, and `L4`'s bricks quote the seeds verbatim. Several `L4` advantages are therefore design properties, verified end-to-end, rather than emergent ones.
+- **Asymmetric information.** Only `L1` and `L4` are told about the private cancellation, `L4`'s bricks quote the seeds verbatim, and `L4` is the only arm that consumes the hand-authored `CONCEPT_BRIDGES` graph and `WakeStimulus.concepts` tags for PPR cue seeding (unlike the automatic OpenIE + SVD-LSA index in [`STEELMAN-STUDY.md`](STEELMAN-STUDY.md)). Several `L4` advantages are therefore design properties, verified end-to-end, rather than emergent ones.
 - **Scorers are lexical.** See §4.6.
 - **The mock LLM is scripted.** The deterministic mock used in `tests/` deliberately makes `L1` yield to soft pushback and `L2` drop hedges, so that the harness plumbing can be tested. It is not evidence. The live models did neither.
 
@@ -290,7 +290,7 @@ This tier checks the rendered context only. No model is called.
 | `E_ContinuationEssay` | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.85 |
 | `E_ExtractiveDyadicBricks` | **1.00** | **1.00** | **1.00** | **1.00** | **1.00** | 0.80 |
 
-**Reading:** The extractive bricks carry every planted fact and keep 80% of 128-byte prefix blocks stable between stages. Two caveats apply. First, `S2_mutable_blocks` matches the bricks on facts, reversals, and nogoods; the bricks differ from it only on dirty/daemon state and escalation hygiene, and `S2` has much worse prefix stability (0.47). Second, the bricks extractor and this scenario were written together, and the extractor's anchor regexes (`FAIL:`, `SPEC:`, `UPPER_SNAKE` tokens) match how the scenario encodes facts. The perfect brick row is an upper bound on carriage. It should not be read as a measurement of generalization.
+**Reading:** The extractive bricks carry every planted fact and keep 80% of 128-byte prefix blocks stable between stages. Two caveats apply. First, `S2_mutable_blocks` matches the bricks on facts, reversals, and nogoods; the bricks differ from it only on dirty/daemon state and escalation hygiene, and `S2` has much worse prefix stability (0.47). Second, the bricks extractor and this scenario were written together, and the extractor's anchor regexes (`FAIL:`, `SPEC:`, `UPPER_SNAKE` tokens) match how the scenario encodes facts. The perfect brick row is an upper bound on carriage. It should not be read as a measurement of generalization. Likewise, `E_ContinuationEssay` is a synthetic lossy filter rather than an LLM-written handoff note: its reducer keeps only `OWNER` turns lacking `"supersedes"` truncated to a 68-character prefix slice (`event.text[:68]`), plus `COORDINATOR_BRIEF:` and `PROSE_HYPOTHESIS:` lines, capped at six bullets. Its `0.00` deterministic recall reflects that deliberate truncation baseline rather than free-form model summarization.
 
 ### 5.3 Live tier: does a `glm-5.3` successor *use* the facts?
 
