@@ -27,8 +27,8 @@ Controlled 2025–2026 benchmarks and production session audits refute several w
 | **[`docs/TAXONOMY.md`](docs/TAXONOMY.md)** | **The 7 Degrees of Freedom of Environmental Context** + source-level comparison of **Connectome** (`AutobiographicalStrategy` + `kv-stable` as-of folds), **UniiChat** (dyadic binary summary tree + `zoom`), **Letta / MemGPT** (mutable core blocks + sleep-time compute + Git context repos), **at_mcp** (pointer-only wake delivery over AT Protocol), **Zep / Graphiti** (bi-temporal graphs), **HippoRAG 2** (Personalized PageRank associative recall), and **extractive provenance/assumption substrates**. |
 | **[`docs/EMPIRICAL-LEDGER.md`](docs/EMPIRICAL-LEDGER.md)** | **Primary-Source Quantitative Ledger**: Exact experimental tables, effect sizes, scaling thresholds, and "less-than-real" refutations across 80+ primary papers (2015–2026) and multi-session field audits. |
 | **[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)** | **Longitudinal Benchmark & Ablation Protocol**: Controlled *same-weights × same-affordances × distinct environmental physics* experiments measuring temporal belief revision, non-lexical associative recall, promise/obligation tracking, social prompt-injection laundering, KV-cache prefix hit ratios, and 60-day longitudinal persona/attractor drift. |
-| **[`substrates/`](substrates/)** | Six runnable reference engines (`S0` SlidingWindow + BareRecall w/ monotonic forgetting horizon, `S1` WorkspaceGrep, `S2` MutableBlocks, `S4` DyadicTreeZoom, `S5` BipartitePPR, and `S6` HybridDyadicCue) behind one uniform `Substrate` interface. |
-| **[`bench/suite.py`](bench/suite.py)** & **[`tests/`](tests/)** | Reproducible evaluation suite (`python3 -m bench.suite` and `python3 -m unittest discover -s tests -v`) measuring bi-temporal revision, point-in-time historical queries, lexical-zero associative recall, 400-session distractor scaling, private-DM cancellation leak safety, subject-cursor staleness, compaction laundering, and byte-exact KV-cache prefix block hit rates. |
+| **[`substrates/`](substrates/)** | Seven runnable reference engines (`S0` SlidingWindow + BareRecall w/ monotonic forgetting horizon, `S1` WorkspaceGrep, `S2` MutableBlocks, `S3` AsOfAutobiographicalFold, `S4` DyadicTreeZoom, `S5` BipartitePPR, and `S6` HybridDyadicCue) behind one uniform `Substrate` interface. |
+| **[`bench/suite.py`](bench/suite.py)**, **[`bench/atproto_replay.py`](bench/atproto_replay.py)** & **[`tests/`](tests/)** | Reproducible evaluation suites (`python3 -m bench.suite`, `python3 -m bench.atproto_replay`, and `python3 -m unittest discover -s tests -v`) measuring bi-temporal revision, point-in-time historical queries, lexical-zero associative recall, 400-session distractor scaling, ATProto CID edits & delete tombstones, `no_reply` restraint parity, 60-wake recall-loop self-conditioning, *"The Sieve"* hedge drop (`Diary` vs. `Ledger`), private-DM cancellation leak safety, subject-cursor staleness, compaction laundering, and byte-exact KV-cache prefix block hit rates. |
 
 ---
 
@@ -37,6 +37,9 @@ Controlled 2025–2026 benchmarks and production session audits refute several w
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m bench.suite
+python3 -m bench.atproto_replay
+# Optional: replay a local ATProto / Jetstream firehose JSONL export
+python3 -m bench.atproto_replay --jsonl /path/to/firehose.jsonl
 ```
 
 ---

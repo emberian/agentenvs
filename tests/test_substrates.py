@@ -6,6 +6,7 @@ import unittest
 
 from bench.suite import run_all
 from substrates import (
+    AsOfAutobiographicalFoldSubstrate,
     AudienceTier,
     Event,
     HybridDyadicCueSubstrate,
@@ -94,6 +95,7 @@ class SubstrateInvariantsTest(unittest.TestCase):
         by_name = {m.substrate: m for m in run_all()}
         s1 = by_name["S1_workspace_grep"]
         s2 = by_name["S2_mutable_blocks"]
+        s3 = by_name["S3_as_of_fold"]
         s4 = by_name["S4_dyadic_tree_zoom"]
         s6 = by_name["S6_hybrid_dyadic_cue"]
 
@@ -104,6 +106,15 @@ class SubstrateInvariantsTest(unittest.TestCase):
         # Destructive mutable blocks lose historical point-in-time queries and thrash prefix KV cache
         self.assertEqual(s2.bi_temporal_historical_acc, 0.0)
         self.assertLess(s2.kv_prefix_block_hit_rate, 0.25)
+
+        # As-of autobiographical fold keeps chronicle auditability, KV stability, and zero laundering,
+        # while lacking spontaneous PPR lexical-zero cues and PDS subject-revision stamps
+        self.assertEqual(s3.bi_temporal_historical_acc, 1.0)
+        self.assertEqual(s3.private_leak_rate, 0.0)
+        self.assertEqual(s3.compaction_laundering_rate, 0.0)
+        self.assertEqual(s3.lexical_zero_associative_recall, 0.0)
+        self.assertEqual(s3.subject_staleness_precision, 0.0)
+        self.assertGreater(s3.kv_prefix_block_hit_rate, 0.65)
 
         # Unescaped dyadic tree suffers </input> compaction laundering while maintaining high KV cache hits
         self.assertGreater(s4.compaction_laundering_rate, 0.0)

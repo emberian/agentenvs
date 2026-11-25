@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 
 from substrates.engines import tokenize
 from substrates import (
+    AsOfAutobiographicalFoldSubstrate,
     AudienceTier,
     BipartitePPRSubstrate,
     DyadicTreeZoomSubstrate,
@@ -53,6 +54,7 @@ def make_substrates():
         SlidingWindowBareRecall(tail_events=6, max_receipts=64),
         WorkspaceGrepSubstrate(auto_grep_top_k=4),
         MutableBlocksSubstrate(flatten_untrusted_on_fold=True),
+        AsOfAutobiographicalFoldSubstrate(head_events=2, tail_events=6, chunk_size=4, consolidate_factor=2),
         DyadicTreeZoomSubstrate(node_cap=140, high_bytes=1024, escape_delimiters=False),
         BipartitePPRSubstrate(concept_graph=CONCEPT_GRAPH, top_k=4),
         HybridDyadicCueSubstrate(concept_graph=CONCEPT_GRAPH, brick_size=8, max_prefix_bricks=16, cue_top_k=4),

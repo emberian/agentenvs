@@ -8,16 +8,17 @@ A central open question raised by practitioners running persistent social and co
 
 ---
 
-## 1. Six Reference Substrates Under Test (`substrates/`)
+## 1. Seven Reference Substrates Under Test (`substrates/`)
 
-All six substrates implement one minimal host interface (`ingest(event)`, `compile_context(turn_trigger, surface_tier, budget_bytes) -> PromptView`, `execute_memory_tool(call) -> ToolOutput`, `sleep_tick()`):
+All seven substrates implement one minimal host interface (`ingest(event)`, `compile_view(trigger, budget_bytes) -> PromptView`, `execute_tool(tool_name, arg, surface_tier) -> str`, `sleep_tick()`):
 
-1. **`S0: SlidingWindow + BareRecall`** *(Baseline)* — Fixed recent token window + pull-only `search_history(query)` lexical/BM25 tool (modeling today's default MCP social-agent setup).
-2. **`S1: WorkspaceFiles + Grep`** *(Clawd / Agent-Filesystem style)* — Agent-maintained markdown files (`IDENTITY.md`, `PEOPLE.md`, `NOTES.md`) + `read_file` / `grep` / `edit_file`.
-3. **`S2: MutableBlocks + SleepCommit`** *(Letta / Context-Repo style)* — Pinned structured blocks (`persona`, `relationships`, `commitments`) updated out-of-band during `sleep_tick()` into a versioned Git tree.
-4. **`S3: AsOfAutobiographicalFold`** *(Connectome `kv-stable` style)* — Verbatim head + `L1..L4` first-person as-of folds (consolidated one level deeper) + large verbatim tail.
-5. **`S4: DyadicSummaryTree + Zoom`** *(UniiChat `Memory.ts` style)* — Power-of-2 512-byte background summary bricks (`(2i+1)2^l - 1`), hysteresis halving at budget ceiling, and `zoom(id+n)` binary expansion (with content-escaped `<input>` framing).
-6. **`S5: HybridDyadicCue`** *(`agentenvs` synthesis)* — Immutable provenance-typed Ledger + byte-stable extractive/as-of dyadic prefix bricks + separate Open-Obligations & `FAIL` Nogoods register + `(subject, rev)` staleness stamps + `<300`-token tail-injected associative Cue Card (`BM25 + dense/PPR` filtered by monotone audience tier) with `expand(ref)` handles.
+1. **`S0: SlidingWindow + BareRecall`** *(Baseline)* — Fixed recent token window + pull-only `recall(query)` lexical tool + monotonic `newest_forgotten_time` horizon (modeling today's default MCP social-agent setup).
+2. **`S1: WorkspaceFiles + Grep`** *(Clawd / Agent-Filesystem style)* — Agent-maintained markdown files (`MEMORY.md`, notes) + BM25/lexical lookup.
+3. **`S2: MutableBlocks`** *(Letta / Context-Repo style)* — Pinned structured core registers (`persona`, `relationships`, `commitments`) updated in-place.
+4. **`S3: AsOfAutobiographicalFold`** *(Connectome `kv-stable` style)* — Verbatim head + `L1..L3` first-person as-of folds (consolidated one level deeper) + verbatim tail, instrumenting *"The Sieve"* (hedge & relation erosion across fold levels).
+5. **`S4: DyadicSummaryTree + Zoom`** *(UniiChat `Memory.ts` style)* — Power-of-2 background summary bricks (`(2i+1)2^l - 1`), hysteresis halving at budget ceiling, and `zoom(id+n)` binary expansion.
+6. **`S5: BipartitePPR`** *(HippoRAG 2 style)* — Specificity-weighted bipartite Passage + Concept Personalized PageRank associative index.
+7. **`S6: HybridDyadicCue`** *(`agentenvs` synthesis)* — Immutable provenance-typed Ledger + byte-stable extractive dyadic prefix bricks + separate Open-Obligations register + `(subject, rev)` staleness stamps + `<300`-token tail-injected associative Cue Card (`BM25 + bipartite PPR` filtered by monotone audience tier and bi-temporal validity) with `expand(ref)` handles.
 
 ---
 

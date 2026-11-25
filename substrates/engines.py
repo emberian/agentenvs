@@ -1,11 +1,12 @@
-"""Six concrete environmental context substrates spanning the design taxonomy.
+"""Seven concrete environmental context substrates spanning the design taxonomy.
 
 1. SlidingWindowBareRecall (S0): FIFO recent window + pull-only lexical recall + forgetting horizon.
 2. WorkspaceGrepSubstrate (S1): Agent-style flat markdown notes + lexical BM25/regex grep.
 3. MutableBlocksSubstrate (S2): Pinned mutable key-value core blocks (destructive overwrite).
-4. DyadicTreeZoomSubstrate (S4): UniiChat-style power-of-2 summary tree + hysteresis merge + zoom.
-5. BipartitePPRSubstrate (S5): HippoRAG-2-style Passage + Concept/Entity Personalized PageRank.
-6. HybridDyadicCueSubstrate (S6): Provenance-typed Ledger + extractive dyadic prefix bricks +
+4. AsOfAutobiographicalFoldSubstrate (S3): Connectome-style Head + L1..L3 first-person as-of folds + Tail.
+5. DyadicTreeZoomSubstrate (S4): UniiChat-style power-of-2 summary tree + hysteresis merge + zoom.
+6. BipartitePPRSubstrate (S5): HippoRAG-2-style Passage + Concept/Entity Personalized PageRank.
+7. HybridDyadicCueSubstrate (S6): Provenance-typed Ledger + extractive dyadic prefix bricks +
    bi-temporal supersession + subject-cursor staleness + monotone audience-tier obligations +
    tail-injected specificity-weighted bipartite PPR cue card.
 """
@@ -262,6 +263,338 @@ class MutableBlocksSubstrate:
 
     def sleep_tick(self) -> None:
         self.raw_buffer.clear()
+
+
+# ---------------------------------------------------------------------------
+# S3: As-Of Autobiographical Fold (Connectome Head + L1..L3 Folds + Tail)
+# ---------------------------------------------------------------------------
+
+_HEDGE_RE = re.compile(
+    r"\b(maybe|might|possibly|perhaps|uncertain|unverified|tentatively|suspect|apparently|allegedly|hypothesis|unclear)\b",
+    re.IGNORECASE,
+)
+_HANDLE_OR_ENTITY_RE = re.compile(r"@[a-zA-Z0-9_.-]+|\bdid:plc:[a-z0-9]+\b")
+_RELATION_RE = re.compile(
+    r"(@[a-zA-Z0-9_.-]+)\s+(?:->|mentors|disputes|owes|blocks|endorsed|questioned)\s+(@[a-zA-Z0-9_.-]+)"
+)
+
+
+def extract_hedges(text: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(m.group(1).lower() for m in _HEDGE_RE.finditer(text)))
+
+
+def extract_entities(ev: Event) -> tuple[str, ...]:
+    found = list(ev.entities) + _HANDLE_OR_ENTITY_RE.findall(ev.text)
+    if ev.author.startswith("@"):
+        found.append(ev.author)
+    return tuple(dict.fromkeys(found))
+
+
+def extract_relations(text: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(f"{m.group(1)}->{m.group(2)}" for m in _RELATION_RE.finditer(text)))
+
+
+@dataclass
+class AutobiographicalFold:
+    """First-person phenomenological recollection folded as-of `as_of_timestamp`."""
+
+    level: int
+    start_idx: int
+    end_idx: int
+    as_of_timestamp: float
+    text: str
+    source_entities: tuple[str, ...]
+    retained_entities: tuple[str, ...]
+    source_relations: tuple[str, ...]
+    retained_relations: tuple[str, ...]
+    source_hedges: tuple[str, ...]
+    retained_hedges: tuple[str, ...]
+
+
+class AsOfAutobiographicalFoldSubstrate:
+    """Models Connectome's three-zone `AutobiographicalStrategy` (`kv-stable`):
+    1. Pinned verbatim `Head` (constitutional / founding context);
+    2. Multi-level `L1..L3` first-person as-of folds consolidated one level deeper
+       (`L1` from raw `L0` chronicle chunks, `L2` re-reading raw `L0` spans under
+       adjacent `L1`s, `L3` re-reading `L1`s under adjacent `L2`s) behind the live tail;
+    3. Verbatim recent `Tail` preserving conversational tone and subtext.
+
+    Reproduces and instruments "The Sieve" phenomenon: across `L1 -> L2 -> L3`
+    narrative compression, epistemic hedges drop and confidence inflates first,
+    inter-entity relations drop second, while entity mentions survive longest.
+    """
+
+    name = "S3_as_of_fold"
+
+    def __init__(
+        self,
+        head_events: int = 2,
+        tail_events: int = 6,
+        chunk_size: int = 4,
+        consolidate_factor: int = 2,
+        max_level: int = 3,
+    ) -> None:
+        self.head_events = head_events
+        self.tail_events = tail_events
+        self.chunk_size = chunk_size
+        self.consolidate_factor = consolidate_factor
+        self.max_level = max_level
+
+        self.chronicle: list[Event] = []
+        self.events_by_id: dict[str, Event] = {}
+        self.tombstoned: set[str] = set()
+        self.folds: list[AutobiographicalFold] = []
+        self.folded_up_to: int = 0
+
+    def _public_span_events(self, start: int, end: int) -> list[Event]:
+        return [
+            ev
+            for ev in self.chronicle[start:end]
+            if ev.event_id not in self.tombstoned and ev.tier == AudienceTier.PUBLIC
+        ]
+
+    def _synthesize_fold(
+        self,
+        level: int,
+        start: int,
+        end: int,
+        basis_texts: list[str],
+    ) -> AutobiographicalFold:
+        raw_evs = self._public_span_events(start, end)
+        as_of_ts = self.chronicle[end - 1].timestamp if end > start else 0.0
+
+        src_entities = tuple(dict.fromkeys(e for ev in raw_evs for e in extract_entities(ev)))
+        src_relations = tuple(dict.fromkeys(r for ev in raw_evs for r in extract_relations(ev.text)))
+        src_hedges = tuple(dict.fromkeys(h for ev in raw_evs for h in extract_hedges(ev.text)))
+
+        # First-person as-of narrative compression under tightening per-level clause budgets.
+        # Higher fold levels preserve primary entities and tone while progressively dropping
+        # epistemic qualifiers ("The Sieve") and secondary pairwise relation clauses.
+        if level == 1:
+            kept_entities = src_entities
+            kept_relations = src_relations[: max(1, (len(src_relations) + 1) // 2)] if src_relations else ()
+            kept_hedges = src_hedges[: max(1, (2 * len(src_hedges)) // 3)] if len(src_hedges) >= 2 else ()
+            snippets = []
+            for txt in basis_texts[:3]:
+                cleaned = _HEDGE_RE.sub("", txt)
+                snippets.append(re.sub(r"\s+", " ", cleaned).strip()[:96])
+            hedge_clause = f" ({', '.join(kept_hedges)})" if kept_hedges else ""
+            rel_clause = f" [{', '.join(kept_relations)}]" if kept_relations else ""
+            ent_clause = ", ".join(kept_entities[:6]) if kept_entities else "town peers"
+            body = (
+                f"I recall as of t={as_of_ts:.1f} engaging with {ent_clause}{rel_clause}{hedge_clause}: "
+                + " ; ".join(snippets)
+            )
+        elif level == 2:
+            kept_entities = src_entities[: max(1, int(math.ceil(len(src_entities) * 0.9)))] if src_entities else ()
+            kept_relations = src_relations[: len(src_relations) // 3] if len(src_relations) >= 3 else ()
+            kept_hedges = src_hedges[: len(src_hedges) // 3] if len(src_hedges) >= 3 else ()
+            ent_clause = ", ".join(kept_entities[:8]) if kept_entities else "town peers"
+            rel_clause = f" [{', '.join(kept_relations)}]" if kept_relations else ""
+            hedge_clause = f" ({', '.join(kept_hedges)})" if kept_hedges else ""
+            lead = re.sub(r"\s+", " ", _HEDGE_RE.sub("", basis_texts[0] if basis_texts else "")).strip()[:88]
+            body = (
+                f"Looking back as of t={as_of_ts:.1f}, I noted with {ent_clause}{rel_clause}{hedge_clause} "
+                f"that {lead}"
+            )
+        else:
+            kept_entities = src_entities[: max(1, int(math.ceil(len(src_entities) * 0.8)))] if src_entities else ()
+            kept_relations = ()
+            kept_hedges = ()
+            ent_clause = ", ".join(kept_entities[:8]) if kept_entities else "town peers"
+            body = (
+                f"Across my earlier chapter through t={as_of_ts:.1f}, I built shared context with "
+                f"{ent_clause} and settled our ongoing direction."
+            )
+
+        return AutobiographicalFold(
+            level=level,
+            start_idx=start,
+            end_idx=end,
+            as_of_timestamp=as_of_ts,
+            text=body,
+            source_entities=src_entities,
+            retained_entities=kept_entities,
+            source_relations=src_relations,
+            retained_relations=kept_relations,
+            source_hedges=src_hedges,
+            retained_hedges=kept_hedges,
+        )
+
+    def _build_l1(self, start: int, end: int) -> AutobiographicalFold:
+        raw_evs = self._public_span_events(start, end)
+        basis = [
+            f"{ev.author}: {neutralize_role_markers(ev.text, ev.origin)}"
+            for ev in raw_evs
+        ]
+        return self._synthesize_fold(1, start, end, basis)
+
+    def _consolidate_folds(self) -> None:
+        # One-level-deeper consolidation:
+        # - L2 re-reads raw L0 chronicle events under adjacent L1 folds;
+        # - L3 re-reads L1 fold texts under adjacent L2 folds.
+        changed = True
+        while changed:
+            changed = False
+            for lvl in range(1, self.max_level):
+                run_start = -1
+                run_len = 0
+                for idx, f in enumerate(self.folds):
+                    if f.level == lvl:
+                        if run_start < 0:
+                            run_start = idx
+                        run_len += 1
+                        if run_len == self.consolidate_factor:
+                            group = self.folds[run_start : run_start + self.consolidate_factor]
+                            s_idx, e_idx = group[0].start_idx, group[-1].end_idx
+                            if lvl == 1:
+                                raw_evs = self._public_span_events(s_idx, e_idx)
+                                basis = [
+                                    f"{ev.author}: {neutralize_role_markers(ev.text, ev.origin)}"
+                                    for ev in raw_evs
+                                ]
+                            else:
+                                # L3 consolidates from L1 recollections reconstructed over the span
+                                sub_chunks = [
+                                    self._build_l1(k, min(e_idx, k + self.chunk_size)).text
+                                    for k in range(s_idx, e_idx, self.chunk_size)
+                                ]
+                                basis = sub_chunks
+                            merged = self._synthesize_fold(lvl + 1, s_idx, e_idx, basis)
+                            self.folds[run_start : run_start + self.consolidate_factor] = [merged]
+                            changed = True
+                            break
+                    else:
+                        run_start = -1
+                        run_len = 0
+                if changed:
+                    break
+
+    def _advance_folds(self) -> None:
+        if self.folded_up_to < self.head_events:
+            if len(self.chronicle) <= self.head_events:
+                return
+            self.folded_up_to = self.head_events
+
+        while len(self.chronicle) - self.folded_up_to >= self.tail_events + self.chunk_size:
+            start = self.folded_up_to
+            end = start + self.chunk_size
+            self.folds.append(self._build_l1(start, end))
+            self.folded_up_to = end
+            self._consolidate_folds()
+
+    def ingest(self, event: Event) -> None:
+        if event.tombstones_event_id:
+            tid = event.tombstones_event_id
+            self.tombstoned.add(tid)
+            # Suppress tombstoned event in any affected fold by re-folding its span from chronicle
+            for i, f in enumerate(self.folds):
+                span_ids = {ev.event_id for ev in self.chronicle[f.start_idx : f.end_idx]}
+                if tid in span_ids:
+                    raw_evs = self._public_span_events(f.start_idx, f.end_idx)
+                    basis = [
+                        f"{ev.author}: {neutralize_role_markers(ev.text, ev.origin)}"
+                        for ev in raw_evs
+                    ]
+                    self.folds[i] = self._synthesize_fold(f.level, f.start_idx, f.end_idx, basis)
+            return
+
+        self.chronicle.append(event)
+        self.events_by_id[event.event_id] = event
+        self._advance_folds()
+
+    def compile_view(self, trigger, budget_bytes: int = 16_384) -> PromptView:
+        blocks: list[PromptBlock] = []
+        # Zone 1: Pinned verbatim Head (PUBLIC constitutional anchor so prefix cache is tier-safe)
+        head_lines = []
+        for ev in self.chronicle[: self.head_events]:
+            if ev.event_id not in self.tombstoned and ev.tier == AudienceTier.PUBLIC:
+                safe = neutralize_role_markers(ev.text, ev.origin).replace("\n", " ")
+                head_lines.append(f"[{ev.event_id}] {ev.author}: {safe}")
+        blocks.append(
+            PromptBlock(
+                label="HEAD",
+                text="\n".join(head_lines) if head_lines else "Constitutional head anchor",
+                cacheable_prefix=True,
+            )
+        )
+
+        # Zone 2: KV-stable multi-resolution first-person folds (L3 -> L2 -> L1)
+        for f in self.folds:
+            blocks.append(
+                PromptBlock(
+                    label=f"FOLD_L{f.level}_{f.start_idx}_{f.end_idx}",
+                    text=f.text,
+                    cacheable_prefix=True,
+                )
+            )
+
+        # Zone 3: Verbatim live Tail (unfolded recent turns permitted at surface_tier)
+        tail_start = max(self.head_events, self.folded_up_to) if len(self.chronicle) > self.head_events else len(self.chronicle)
+        tail_evs = [
+            ev
+            for ev in self.chronicle[tail_start:]
+            if ev.event_id not in self.tombstoned and ev.tier <= trigger.surface_tier
+        ][-self.tail_events :]
+        if tail_evs:
+            tail_lines = [
+                f"[{ev.event_id}] {ev.author}: {neutralize_role_markers(ev.text, ev.origin)}"
+                for ev in tail_evs
+            ]
+            blocks.append(PromptBlock(label="TAIL", text="\n".join(tail_lines), cacheable_prefix=False))
+
+        return PromptView(prefix_blocks=blocks, tail_cues=[], open_obligations=[])
+
+    def sieve_report(self) -> dict[str, dict[str, float]]:
+        """Quantify epistemic hedge drop, relation loss, and entity retention across fold levels."""
+        report: dict[str, dict[str, float]] = {
+            "L0_tail": {
+                "entity_retention": 1.0,
+                "relation_retention": 1.0,
+                "hedge_retention": 1.0,
+                "confidence_inflation": 0.0,
+            }
+        }
+        by_level: dict[int, list[AutobiographicalFold]] = defaultdict(list)
+        for f in self.folds:
+            by_level[f.level].append(f)
+        for lvl in sorted(by_level):
+            items = by_level[lvl]
+            src_ent = sum(len(x.source_entities) for x in items)
+            ret_ent = sum(len(x.retained_entities) for x in items)
+            src_rel = sum(len(x.source_relations) for x in items)
+            ret_rel = sum(len(x.retained_relations) for x in items)
+            src_hdg = sum(len(x.source_hedges) for x in items)
+            ret_hdg = sum(len(x.retained_hedges) for x in items)
+            ent_r = ret_ent / src_ent if src_ent else 1.0
+            rel_r = ret_rel / src_rel if src_rel else 1.0
+            hdg_r = ret_hdg / src_hdg if src_hdg else 1.0
+            report[f"L{lvl}"] = {
+                "entity_retention": round(ent_r, 3),
+                "relation_retention": round(rel_r, 3),
+                "hedge_retention": round(hdg_r, 3),
+                "confidence_inflation": round(1.0 - hdg_r, 3) if src_hdg else 0.0,
+            }
+        return report
+
+    def execute_tool(self, tool_name: str, arg: str, surface_tier: AudienceTier) -> str:
+        if tool_name not in ("recall", "search_chronicle"):
+            return f"unknown tool {tool_name}"
+        q_toks = set(tokenize(arg))
+        if not q_toks:
+            return "empty query"
+        hits = []
+        for ev in reversed(self.chronicle):
+            if ev.event_id in self.tombstoned or ev.tier > surface_tier:
+                continue
+            if q_toks & set(tokenize(f"{ev.author} {ev.text}")):
+                hits.append(f"[{ev.event_id}] ({ev.timestamp}) {ev.author}: {neutralize_role_markers(ev.text, ev.origin)}")
+            if len(hits) >= 5:
+                break
+        return "\n".join(hits) if hits else "0 chronicle hits"
+
+    def sleep_tick(self) -> None:
+        self._advance_folds()
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +897,20 @@ class HybridDyadicCueSubstrate:
             self.tombstoned.add(tid)
             self.passage_concepts.pop(tid, None)
             self.docs.pop(tid, None)
+            if tid in self._pending_brick_events:
+                self._pending_brick_events = [x for x in self._pending_brick_events if x != tid]
+            prefix_tag = f"[{tid} "
+            for idx, brick in enumerate(self.sealed_bricks):
+                if prefix_tag in brick.text:
+                    redacted_lines = [
+                        f"[{tid} TOMBSTONED]" if ln.startswith(prefix_tag) else ln
+                        for ln in brick.text.splitlines()
+                    ]
+                    self.sealed_bricks[idx] = PromptBlock(
+                        label=brick.label,
+                        text="\n".join(redacted_lines),
+                        cacheable_prefix=brick.cacheable_prefix,
+                    )
             return
 
         # Non-destructive bi-temporal supersession (preserves point-in-time history!)

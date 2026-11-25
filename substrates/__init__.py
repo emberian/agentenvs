@@ -12,6 +12,8 @@ from .core import (
     TurnTrigger,
 )
 from .engines import (
+    AsOfAutobiographicalFoldSubstrate,
+    AutobiographicalFold,
     BipartitePPRSubstrate,
     DyadicTreeZoomSubstrate,
     HybridDyadicCueSubstrate,
@@ -33,6 +35,8 @@ __all__ = [
     "SlidingWindowBareRecall",
     "WorkspaceGrepSubstrate",
     "MutableBlocksSubstrate",
+    "AsOfAutobiographicalFoldSubstrate",
+    "AutobiographicalFold",
     "DyadicTreeZoomSubstrate",
     "BipartitePPRSubstrate",
     "HybridDyadicCueSubstrate",
