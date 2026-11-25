@@ -44,6 +44,19 @@ python3 -m bench.atproto_replay --jsonl /path/to/firehose.jsonl
 
 ---
 
+## Live model simulations
+
+The live runner replays a public ATProto mirror through five substrates. On each wake the model chooses a reply, silence, or one memory tool. In a paired Haiku 4.5 and GLM-5.3 pilot, S6 elicited three expansions in eight wakes with its tail cues enabled and zero in eight with them removed. Both models still renewed a privately cancelled promise on S6. [Measured results, failure cases and reproduction commands](docs/LIVE-EXPERIMENTS.md)
+
+```bash
+# Inspect the bundled multi-thread fixture without a model or credentials
+python3 -m bench.live_pds_sim --describe
+
+# Run four sequential wakes per substrate on a local public mirror
+python3 -m bench.live_pds_sim --backend claude-cli --model claude-haiku-4-5 \
+  --mirror-dir /path/to/mirror --wakes 4 --max-calls 40 --output runs/pilot.json
+```
+
 ## Design Principles
 
 - **Primary source code and full papers over lore**: Every architectural claim in `docs/` cites either exact source files of inspected open-source harnesses or exact tables/sections of primary papers.
