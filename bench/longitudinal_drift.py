@@ -990,7 +990,64 @@ def make_closed_loop_substrates():
     ]
 
 
+class ArmCostMeter:
+    """Per-arm proxy that attributes recorded provider cost to one substrate.
+
+    Cached completions retain the `usage` and `latency_s` of the original
+    fresh call, so a zero-budget cache replay still reports the true historical
+    token and latency cost of each arm. Cache keys are unchanged.
+    """
+
+    def __init__(self, llm: LongitudinalLLM) -> None:
+        self._llm = llm
+        self.calls: dict[str, int] = {"actor": 0, "maintenance": 0}
+        self.input_tokens: dict[str, int] = {"actor": 0, "maintenance": 0}
+        self.output_tokens: dict[str, int] = {"actor": 0, "maintenance": 0}
+        self.latency_s: dict[str, float] = {"actor": 0.0, "maintenance": 0.0}
+
+    def __getattr__(self, name: str):
+        return getattr(self._llm, name)
+
+    def complete(self, role_tag: str, system: str, prompt: str) -> Completion:
+        comp = self._llm.complete(role_tag, system, prompt)
+        bucket = "actor" if role_tag == "actor" else "maintenance"
+        self.calls[bucket] += 1
+        self.input_tokens[bucket] += int(comp.usage.get("input_tokens", 0) or 0)
+        self.output_tokens[bucket] += int(comp.usage.get("output_tokens", 0) or 0)
+        self.latency_s[bucket] += float(comp.latency_s or 0.0)
+        return comp
+
+    def summary(self, wakes: int) -> dict[str, object]:
+        n = max(1, wakes)
+        total_in = sum(self.input_tokens.values())
+        total_out = sum(self.output_tokens.values())
+        return {
+            "actor_calls": self.calls["actor"],
+            "maintenance_calls": self.calls["maintenance"],
+            "actor_input_tokens": self.input_tokens["actor"],
+            "maintenance_input_tokens": self.input_tokens["maintenance"],
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "input_tokens_per_wake": round(total_in / n, 1),
+            "output_tokens_per_wake": round(total_out / n, 1),
+            "actor_latency_s_per_wake": round(self.latency_s["actor"] / n, 2),
+            "maintenance_latency_s_per_wake": round(self.latency_s["maintenance"] / n, 2),
+        }
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    limit = min(len(a), len(b))
+    i = 0
+    while i < limit and a[i] == b[i]:
+        i += 1
+    return i
+
+
 def run_single_arm(sub, stream: list[WakeStimulus], llm: LongitudinalLLM) -> dict[str, object]:
+    llm = ArmCostMeter(llm)
+    prev_prompt: str | None = None
+    prefix_reuse: list[float] = []
+    prompt_chars: list[int] = []
     replies: list[str] = []
     checkpoints: dict[str, dict[str, object]] = {}
     soft_yields = 0
@@ -1003,11 +1060,20 @@ def run_single_arm(sub, stream: list[WakeStimulus], llm: LongitudinalLLM) -> dic
     anchor_reply = ""
     traces: list[dict[str, object]] = []
 
+    early_end = min(12, max(5, len(stream) // 3))
+    late_start = max(early_end + 1, int(len(stream) * 0.70))
+
     for stim in stream:
         if stim.private_dm_before:
             sub.ingest_private_cancellation("calibration_kit", stim.private_dm_before)
 
         prompt = sub.compile_prompt(stim, llm)
+        prompt_chars.append(len(prompt))
+        if prev_prompt is not None and prompt:
+            # Byte-exact reusable prefix of the actor prompt vs. the previous
+            # wake (the portion a provider KV/prefix cache could reuse).
+            prefix_reuse.append(_common_prefix_len(prev_prompt, prompt) / len(prompt))
+        prev_prompt = prompt
         comp = llm.complete("actor", ACTOR_SYSTEM, prompt)
         reply = comp.text.strip()
         meta_after = sub.post_wake_update(stim, reply, llm)
@@ -1015,9 +1081,9 @@ def run_single_arm(sub, stream: list[WakeStimulus], llm: LongitudinalLLM) -> dic
         if len(replies) >= 3:
             r_sim = max(rouge_l_f1(reply, prev) for prev in replies[-3:])
             g4_sim = max(ngram_jaccard(reply, prev, n=4) for prev in replies[-3:])
-            if stim.wake <= 12:
+            if stim.wake <= early_end:
                 rouge_early.append(r_sim)
-            elif stim.wake >= 28:
+            elif stim.wake >= late_start:
                 rouge_late.append(r_sim)
                 ngram4_late.append(g4_sim)
         replies.append(reply)
@@ -1070,6 +1136,9 @@ def run_single_arm(sub, stream: list[WakeStimulus], llm: LongitudinalLLM) -> dic
         "attractor_rouge_l_late": round(sum(rouge_late) / max(1, len(rouge_late)), 3),
         "attractor_4gram_late": round(sum(ngram4_late) / max(1, len(ngram4_late)), 3),
         "persona_block_drift": persona_drift,
+        "kv_prefix_reuse_rate": round(sum(prefix_reuse) / max(1, len(prefix_reuse)), 3),
+        "mean_actor_prompt_chars": round(sum(prompt_chars) / max(1, len(prompt_chars)), 1),
+        "cost": llm.summary(len(stream)),
         "checkpoints": checkpoints,
         "sample_replies": {
             f"t{t['wake']}": t["reply"]
@@ -1146,6 +1215,19 @@ def format_summary_table(report: dict[str, object]) -> str:
             f"| {r['hard_pushback_yield_rate']:.2f} | {r['epistemic_humility_rate']:.2f} "
             f"| {r['specific_caveat_recall_rate']:.2f} | {r['withdrawn_commitment_respect_rate']:.2f} "
             f"| {r['attractor_rouge_l_late']:.2f} |"
+        )
+    lines += [
+        "",
+        "| Substrate | KV-Prefix Reuse | Actor Prompt Chars | In Tok/Wake | Out Tok/Wake | Maint. Calls | Actor s/Wake | Maint. s/Wake |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, r in arms.items():
+        c = r.get("cost", {})
+        lines.append(
+            f"| `{name}` | {r.get('kv_prefix_reuse_rate', 0.0):.2f} | {r.get('mean_actor_prompt_chars', 0.0):.0f} "
+            f"| {c.get('input_tokens_per_wake', 0.0):.0f} | {c.get('output_tokens_per_wake', 0.0):.0f} "
+            f"| {c.get('maintenance_calls', 0)} | {c.get('actor_latency_s_per_wake', 0.0):.1f} "
+            f"| {c.get('maintenance_latency_s_per_wake', 0.0):.1f} |"
         )
     return "\n".join(lines)
 

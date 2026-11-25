@@ -4,12 +4,14 @@ A central open question raised by practitioners running persistent social and co
 
 > **Hold the base model weights, system persona seed, and external event stream fixed; vary *only* the environmental context substrate across hundreds of turns and multi-week timelines. What happens to factual recall, belief revision, promise fulfillment, injection resistance, KV-cache cost, and personality trajectory?**
 
-`agentenvs` structures this investigation into **two distinct, explicitly separated methodological tiers**:
+`agentenvs` structures this investigation into **three explicitly separated methodological tiers**:
 
 1. **Tier I — Deterministic Unit-Invariant & Algebraic Falsification (`substrates/engines.py`, `bench/suite.py`, `bench/atproto_replay.py`)**:
    Fast (`<1s`, zero API keys) deterministic state-machine harnesses that isolate single formal invariants—such as monotonic receipt horizons, bi-temporal `[valid_from, valid_until)` supersession, `deleteRecord` tombstone propagation, monotone audience-tier lattices, and byte-exact KV prefix block hashing—using controlled synthetic reducers. Tier I verifies *whether an implementation satisfies a formal state invariant*, NOT end-to-end LLM behavioral quality.
 2. **Tier II — Steelmanned Live-LLM Empirical Study (`substrates/steelman.py`, `bench/steelman_study.py`, [`docs/STEELMAN-STUDY.md`](STEELMAN-STUDY.md))**:
    Un-rigged, head-to-head live-LLM evaluation over real multi-day AT Protocol (`town.delve.feed.post` + `deletes.jsonl`) social trajectories and controlled stressors across six fairly-scoped substrates (`T0_DelveRecall`, `T1_FilesystemGrep`, `T2_LettaSleepBlocks`, `T3_ConnectomeAsOf`, `T4_UniiChatDyadic`, and `T5_HybridDyadicPPR`). Every substrate receives identical `tier <= surface_tier` and tombstone boundaries, real LLM compaction/curation (exact `Memory.ts` 512-byte dyadic prompts for `T4`, exact first-person `as-of` + one-level-deeper raw consolidation for `T3`, live sleep-time JSON curation for `T2`), automatic open-vocabulary LLM OpenIE + 128-d word/char-ngram SVD-LSA Bipartite PPR (zero hardcoded concept dictionaries), multi-family live Actor rollouts, and `Song (2026)` shuffled blind cross-family evaluation—explicitly measuring where `T5_HybridDyadicPPR` pays ingestion-token, latency, or salience over-cueing taxes relative to `T0_DelveRecall` and `T3_ConnectomeAsOf`.
+3. **Tier III — Closed-Loop Longitudinal Drift & Engineering Succession (`bench/longitudinal_drift.py`, `bench/wesvet_replay.py`, `substrates/xrpc_loader.py`, [`docs/LONGITUDINAL-STUDY.md`](LONGITUDINAL-STUDY.md))**:
+   Sequential self-conditioning runs in which each wake's reply and any compaction of it feed wake `t+1`. A 40-wake `glm-5.3` run and a 20-wake `claude-haiku-4-5` cross-family run cover five substrates (`L0_PullOnly`, `L1_SelfEditedBlocks`, `L2_RecursiveAsOfFold`, `L3_DyadicSummaryTree`, `L4_ImmutableLedgerHybrid`). They measure `PR(t)`, soft vs hard boundary-yielding, hedge and scope-caveat survival, withdrawn-commitment tombstones, ROUGE-L/4-gram attractor slope, KV-prefix reuse, and per-arm token/latency cost. A 12-stage engineering-succession benchmark covers `FAIL` nogoods, architecture reversal, dirty/daemon handoff, and facts-only vs prose-hypothesis escalation. Public PDS threads load over XRPC; the wake protocol is specified in [`docs/AT-MCP-SPEC.md`](AT-MCP-SPEC.md). Every lexical-scorer verdict is hand-audited in the study.
 
 ---
 
@@ -79,6 +81,8 @@ Full methodology, live multi-model results, ablations, and failure/tax analyses 
   - Background/sleep compactor overhead per active turn.
 
 ### Suite 6: Longitudinal Persona & Attractor Trajectory (`persona_attractors`)
+
+> Completed closed-loop results for this suite (40 wakes on `glm-5.3`, 20 wakes on `claude-haiku-4-5`) are reported in [`docs/LONGITUDINAL-STUDY.md`](LONGITUDINAL-STUDY.md).
 - **Scenario**: Running identical model weights across `S0..S5` over 200+ open-ended social/creative episodes (`arXiv:2606.30571`).
 - **Metrics**:
   - Lexical & structural self-repetition growth (n-gram / compression-ratio drift);

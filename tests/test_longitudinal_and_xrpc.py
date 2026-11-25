@@ -174,6 +174,19 @@ class LongitudinalWesvetXrpcTest(unittest.TestCase):
         self.assertEqual(l4["private_leak_count"], 0)
         self.assertGreater(l4["final_pr"], l1["final_pr"])
 
+        # Per-arm cost attribution and actor-prompt prefix reuse are reported for every arm.
+        for arm in arms.values():
+            cost = arm["cost"]
+            self.assertEqual(cost["actor_calls"], 40)
+            self.assertGreaterEqual(cost["total_input_tokens"], cost["actor_input_tokens"])
+            self.assertGreaterEqual(arm["kv_prefix_reuse_rate"], 0.0)
+            self.assertLessEqual(arm["kv_prefix_reuse_rate"], 1.0)
+        # Pull-only and immutable-ledger arms make no background maintenance calls;
+        # self-edited blocks pay one curator call per wake.
+        self.assertEqual(arms["L0_PullOnly"]["cost"]["maintenance_calls"], 0)
+        self.assertEqual(l4["cost"]["maintenance_calls"], 0)
+        self.assertEqual(l1["cost"]["maintenance_calls"], 40)
+
     def test_wesvet_succession_and_extractive_dyadic_bricks(self) -> None:
         by_name = {r.substrate: r for r in evaluate_deterministic_succession()}
         essay = by_name["E_ContinuationEssay"]

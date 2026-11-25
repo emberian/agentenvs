@@ -29,6 +29,8 @@ Controlled 2025–2026 benchmarks and production session audits refute several w
 | **[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)** | **Longitudinal Benchmark & Ablation Protocol**: Controlled *same-weights × same-affordances × distinct environmental physics* experiments measuring temporal belief revision, non-lexical associative recall, promise/obligation tracking, social prompt-injection laundering, KV-cache prefix hit ratios, and 60-day longitudinal persona/attractor drift. |
 | **[`substrates/`](substrates/)** | Reference state-machine engines (`S0..S6` in `engines.py`) plus six source-faithful live-LLM substrates (`T0_DelveRecall`, `T1_FilesystemGrep`, `T2_LettaSleepBlocks`, `T3_ConnectomeAsOf`, `T4_UniiChatDyadic`, and `T5_HybridDyadicPPR` with automatic OpenIE + 128-d SVD-LSA Bipartite PPR in `steelman.py`). |
 | **[`docs/STEELMAN-STUDY.md`](docs/STEELMAN-STUDY.md)** & **[`bench/steelman_study.py`](bench/steelman_study.py)** | **Multi-Model Live ATProto Empirical Study (`N = 30` multi-day wakes, `3,064+` live model calls)**: Evaluates `T0..T5` across `glm-5.3-flash` (`180` wakes), `claude-sonnet-4-6` (`72` wakes), and shuffled blind cross-family judging ($r = 0.872$) over anonymized multi-day threads, zero-token-overlap callbacks, ambient social restraint traps, CID edits/tombstones/private-DM cancellations, 20-turn *"Sieve"* hedge decay, and live compactor laundering. |
+| **[`docs/LONGITUDINAL-STUDY.md`](docs/LONGITUDINAL-STUDY.md)**, **[`bench/longitudinal_drift.py`](bench/longitudinal_drift.py)** & **[`bench/wesvet_replay.py`](bench/wesvet_replay.py)** | **Closed-Loop Longitudinal Study**: 40-wake `glm-5.3` and 20-wake `claude-haiku-4-5` runs where each wake's reply and compaction feed wake `t+1` across five substrates (`L0` pull-only, `L1` self-edited blocks, `L2` recursive as-of folds, `L3` dyadic summary tree, `L4` immutable ledger hybrid), plus a 12-stage engineering-succession benchmark (dead-end `FAIL` nogoods, architecture reversal, dirty/daemon handoff, facts-only vs prose-hypothesis escalation). Reports the costs `L4` pays, ties, and a hand audit of every lexical-scorer verdict. |
+| **[`docs/AT-MCP-SPEC.md`](docs/AT-MCP-SPEC.md)** & **[`substrates/xrpc_loader.py`](substrates/xrpc_loader.py)** | Pointer-only AT Protocol wake-delivery spec, and a stdlib XRPC loader that discovers PDS repos (`com.atproto.sync.listRepos`), paginates `com.atproto.repo.listRecords`, and anonymizes handles/DIDs. |
 | **[`bench/suite.py`](bench/suite.py)**, **[`bench/atproto_replay.py`](bench/atproto_replay.py)** & **[`tests/`](tests/)** | Fast deterministic invariant suites (`python3 -m bench.suite`, `python3 -m bench.atproto_replay`, and `python3 -m unittest discover -s tests -v`, `<1.5s` offline) verifying bi-temporal revision, point-in-time queries, 400-session distractor scaling, ATProto CID edits & delete tombstones, `no_reply` restraint parity, monotonic forgetting horizons, and byte-exact KV-cache prefix block hit rates. |
 
 ---
@@ -41,7 +43,14 @@ python3 -m bench.suite
 python3 -m bench.atproto_replay
 # Optional: replay a local ATProto / Jetstream firehose JSONL export
 python3 -m bench.atproto_replay --jsonl /path/to/firehose.jsonl
+# Closed-loop longitudinal drift + engineering succession (offline mock / deterministic tiers)
+python3 -m bench.longitudinal_drift --mock-llm --wakes 40
+python3 -m bench.wesvet_replay
+# Inspect live public town threads over XRPC (anonymized)
+python3 -m substrates.xrpc_loader --pds https://pds.delve.town --collection town.delve.feed.post --anonymize
 ```
+
+Live-model commands, cache-replay instructions, and full results are in [`docs/LONGITUDINAL-STUDY.md`](docs/LONGITUDINAL-STUDY.md#6-reproduction).
 
 ---
 
