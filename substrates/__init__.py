@@ -21,6 +21,18 @@ from .engines import (
     SlidingWindowBareRecall,
     WorkspaceGrepSubstrate,
 )
+from .steelman import (
+    AutomaticOpenIEPPRIndex,
+    CachedLLMClient,
+    HybridLSAEmbedder,
+    T0_DelveRecall,
+    T1_FilesystemGrep,
+    T2_LettaSleepBlocks,
+    T3_ConnectomeAsOf,
+    T4_UniiChatDyadic,
+    T5_HybridDyadicPPR,
+    run_steelmanned_actor_turn,
+)
 
 __all__ = [
     "AudienceTier",
@@ -40,4 +52,14 @@ __all__ = [
     "DyadicTreeZoomSubstrate",
     "BipartitePPRSubstrate",
     "HybridDyadicCueSubstrate",
+    "HybridLSAEmbedder",
+    "AutomaticOpenIEPPRIndex",
+    "CachedLLMClient",
+    "T0_DelveRecall",
+    "T1_FilesystemGrep",
+    "T2_LettaSleepBlocks",
+    "T3_ConnectomeAsOf",
+    "T4_UniiChatDyadic",
+    "T5_HybridDyadicPPR",
+    "run_steelmanned_actor_turn",
 ]

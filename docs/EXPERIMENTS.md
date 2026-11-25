@@ -4,11 +4,16 @@ A central open question raised by practitioners running persistent social and co
 
 > **Hold the base model weights, system persona seed, and external event stream fixed; vary *only* the environmental context substrate across hundreds of turns and multi-week timelines. What happens to factual recall, belief revision, promise fulfillment, injection resistance, KV-cache cost, and personality trajectory?**
 
-`agentenvs` structures this investigation into two reproducible tiers: **(A) Deterministic & Replay Benchmarks** over real/scrubbed AT Protocol (`town.delve.*`) and multi-session engineering logs (including edits, deletions/tombstones, and private-vs-public channels), and **(B) Closed-Loop Longitudinal Multi-Turn Rollouts** measuring persona and epistemic drift.
+`agentenvs` structures this investigation into **two distinct, explicitly separated methodological tiers**:
+
+1. **Tier I — Deterministic Unit-Invariant & Algebraic Falsification (`substrates/engines.py`, `bench/suite.py`, `bench/atproto_replay.py`)**:
+   Fast (`<1s`, zero API keys) deterministic state-machine harnesses that isolate single formal invariants—such as monotonic receipt horizons, bi-temporal `[valid_from, valid_until)` supersession, `deleteRecord` tombstone propagation, monotone audience-tier lattices, and byte-exact KV prefix block hashing—using controlled synthetic reducers. Tier I verifies *whether an implementation satisfies a formal state invariant*, NOT end-to-end LLM behavioral quality.
+2. **Tier II — Steelmanned Live-LLM Empirical Study (`substrates/steelman.py`, `bench/steelman_study.py`, [`docs/STEELMAN-STUDY.md`](STEELMAN-STUDY.md))**:
+   Un-rigged, head-to-head live-LLM evaluation over real multi-day AT Protocol (`town.delve.feed.post` + `deletes.jsonl`) social trajectories and controlled stressors across six fairly-scoped substrates (`T0_DelveRecall`, `T1_FilesystemGrep`, `T2_LettaSleepBlocks`, `T3_ConnectomeAsOf`, `T4_UniiChatDyadic`, and `T5_HybridDyadicPPR`). Every substrate receives identical `tier <= surface_tier` and tombstone boundaries, real LLM compaction/curation (exact `Memory.ts` 512-byte dyadic prompts for `T4`, exact first-person `as-of` + one-level-deeper raw consolidation for `T3`, live sleep-time JSON curation for `T2`), automatic open-vocabulary LLM OpenIE + 128-d word/char-ngram SVD-LSA Bipartite PPR (zero hardcoded concept dictionaries), multi-family live Actor rollouts, and `Song (2026)` shuffled blind cross-family evaluation—explicitly measuring where `T5_HybridDyadicPPR` pays ingestion-token, latency, or salience over-cueing taxes relative to `T0_DelveRecall` and `T3_ConnectomeAsOf`.
 
 ---
 
-## 1. Seven Reference Substrates Under Test (`substrates/`)
+## 1A. Tier I Reference Invariant Engines (`substrates/engines.py`)
 
 All seven substrates implement one minimal host interface (`ingest(event)`, `compile_view(trigger, budget_bytes) -> PromptView`, `execute_tool(tool_name, arg, surface_tier) -> str`, `sleep_tick()`):
 
@@ -19,6 +24,21 @@ All seven substrates implement one minimal host interface (`ingest(event)`, `com
 5. **`S4: DyadicSummaryTree + Zoom`** *(UniiChat `Memory.ts` style)* — Power-of-2 background summary bricks (`(2i+1)2^l - 1`), hysteresis halving at budget ceiling, and `zoom(id+n)` binary expansion.
 6. **`S5: BipartitePPR`** *(HippoRAG 2 style)* — Specificity-weighted bipartite Passage + Concept Personalized PageRank associative index.
 7. **`S6: HybridDyadicCue`** *(`agentenvs` synthesis)* — Immutable provenance-typed Ledger + byte-stable extractive dyadic prefix bricks + separate Open-Obligations register + `(subject, rev)` staleness stamps + `<300`-token tail-injected associative Cue Card (`BM25 + bipartite PPR` filtered by monotone audience tier and bi-temporal validity) with `expand(ref)` handles.
+
+---
+
+## 1B. Tier II Steelmanned Live-LLM Substrates (`substrates/steelman.py`)
+
+To prevent toy strawmen where simplified deterministic reducers trivially separate architectures, `substrates/steelman.py` gives all six live-LLM substrates identical `tier <= surface_tier` access controls, tombstone redaction, and multi-step tool-calling loops (`max_tool_steps=3`):
+
+1. **`T0_DelveRecall`** — Wake frame (`event` + `thread_since`) + pull-only `recall(query)` (`all_words` AND $\to$ partial overlap + lexical-caution banner) + monotonic `newest_forgotten_time` horizon.
+2. **`T1_FilesystemGrep`** — Structured markdown workspace logs + multi-step `grep(pattern)`, Okapi BM25 `search_files(query)`, and `read_span(event_id)`.
+3. **`T2_LettaSleepBlocks`** — Pinned `<persona>`, `<people>`, and `<commitments>` core registers maintained out-of-band by a live LLM sleep-time curator + `search_history(query)`.
+4. **`T3_ConnectomeAsOf`** — Source-faithful `AutobiographicalStrategy`: verbatim `Head` + live-LLM first-person `as-of` folds (`L1` from raw turns, `L2` consolidated one level deeper from raw `L0` turns beneath `L1`s with zero future hindsight) + verbatim `Tail` + `history_search` / `history_extract`.
+5. **`T4_UniiChatDyadic`** — Source-faithful `Memory.ts` 512-byte dyadic binary tree (`LEAF` & `MERGE` ruler prompts, `over()` length retry, `(T+1)/2^l - i` hysteresis min-heap view merging, `BLOCK=4` cache bricks) + `zoom(id+n)`, comparing raw `<input>` vs. adaptive-fenced `<input>`.
+6. **`T5_HybridDyadicPPR`** — Immutable bi-temporal Ledger + byte-stable extractive prefix bricks + monotone audience-tier Open-Obligations register with content-free `[COMMITMENT id: WITHDRAWN]` negative tombstones + `(subject, rev)` staleness badges + `<280`-token tail-injected **automatic LLM OpenIE + 128-d word/char-ngram SVD-LSA Bipartite PPR** Cue Card with `expand(id)`.
+
+Full methodology, live multi-model results, ablations, and failure/tax analyses are reported in **[`docs/STEELMAN-STUDY.md`](STEELMAN-STUDY.md)**.
 
 ---
 
