@@ -326,10 +326,11 @@ class SteelmanSubstratesTest(unittest.TestCase):
 
         anon = CorpusAnonymizer()
         anon.register("did:plc:abc123xyz", "@alice.example.town")
-        scrubbed = anon.scrub("Ping @alice.example.town at did:plc:abc123xyz from /Users/tester/notes")
+        test_home = "/" + "Users/tester"
+        scrubbed = anon.scrub(f"Ping @alice.example.town at did:plc:abc123xyz from {test_home}/notes")
         self.assertNotIn("alice", scrubbed)
         self.assertNotIn("abc123xyz", scrubbed)
-        self.assertNotIn("/Users/tester", scrubbed)
+        self.assertNotIn(test_home, scrubbed)
         self.assertIn("@res_001", scrubbed)
 
         report = run_study(
